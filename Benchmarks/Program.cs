@@ -4,6 +4,7 @@ using Amazon.Lambda.Model;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using System;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -11,17 +12,55 @@ namespace Benchmarks
 {
     public class AspNetCoreLambdaVsSimpleLambda
     {
+        #region Deployment specific parameters
+
+        private const string AspNetCoreRouteUrl = "https://yeotwci6j1.execute-api.us-east-1.amazonaws.com/Prod/api/values";
+        private const string SimpleFunctionName = "SimpleFunction";
+        private const string AspNetCoreFunctionName = "AspnetCoreLambda-AspNetCoreFunction-E6UTZD3QUFZP";
+        private RegionEndpoint Region = RegionEndpoint.USEast1;
+
+        #endregion
+
         private HttpClient _httpClient;
         private AmazonLambdaClient _lambdaClient;
 
+
         [GlobalSetup]
-        public void Setup()
+        public void GlobalSetup()
         {
             _httpClient = new HttpClient();
-            // This is the URL of my ASP.NET core lambda. You will most likely want to chagne this.
-            _httpClient.BaseAddress = new Uri("https://yeotwci6j1.execute-api.us-east-1.amazonaws.com");
+            _lambdaClient = new AmazonLambdaClient(Region);
+        }
 
-            _lambdaClient = new AmazonLambdaClient(RegionEndpoint.USEast1);
+        private void ForceLambdaColdStart(string functionName)
+        {
+            var value = Guid.NewGuid().ToString().Replace("-", "");
+
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = "aws",
+                Arguments = $"lambda update-function-configuration --function-name {functionName} --environment Variables={{foo={value}}}",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            };
+
+            using (var process = new Process { StartInfo = processStartInfo })
+            {
+                process.Start();
+
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                {
+                    throw new Exception("Failed to change lambda configuration");
+                }
+            }
+        }
+
+        [IterationSetup]
+        public void IterationSetup()
+        {
+            ForceLambdaColdStart(AspNetCoreFunctionName);
+            ForceLambdaColdStart(SimpleFunctionName);
         }
 
         [Benchmark]
@@ -29,7 +68,7 @@ namespace Benchmarks
         {
             var response = await _lambdaClient.InvokeAsync(new InvokeRequest
             {
-                FunctionName = "SimpleFunction",
+                FunctionName = SimpleFunctionName,
                 InvocationType = InvocationType.RequestResponse,
                 Payload = "{}",
             });
@@ -38,10 +77,10 @@ namespace Benchmarks
         [Benchmark]
         public async Task AspnetCoreLambda()
         {
-            var response = await _httpClient.GetAsync("Prod/api/values");
+            var response = await _httpClient.GetAsync(AspNetCoreRouteUrl);
             if (!response.IsSuccessStatusCode)
             {
-                throw new Exception($"Failed to invoke ASP.NET Core lambda: {response.RequestMessage.RequestUri}");
+                throw new Exception($"Failed to invoke ASP.NET Core lambda");
             }
         }
     }
