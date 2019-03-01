@@ -4,6 +4,7 @@ using Amazon.Lambda.Model;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Running;
 using System;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -30,6 +31,37 @@ namespace Benchmarks
         {
             _httpClient = new HttpClient();
             _lambdaClient = new AmazonLambdaClient(Region);
+        }
+
+        private void ForceLambdaColdStart(string functionName)
+        {
+            var value = Guid.NewGuid().ToString().Replace("-", "");
+
+            var processStartInfo = new ProcessStartInfo
+            {
+                FileName = "aws",
+                Arguments = $"lambda update-function-configuration --function-name {functionName} --environment Variables={{foo={value}}}",
+                CreateNoWindow = true,
+                UseShellExecute = false,
+            };
+
+            using (var process = new Process { StartInfo = processStartInfo })
+            {
+                process.Start();
+
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                {
+                    throw new Exception("Failed to change lambda configuration");
+                }
+            }
+        }
+
+        [IterationSetup]
+        public void IterationSetup()
+        {
+            ForceLambdaColdStart(AspNetCoreFunctionName);
+            ForceLambdaColdStart(SimpleFunctionName);
         }
 
         [Benchmark]
